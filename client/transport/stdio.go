@@ -36,6 +36,7 @@ type Stdio struct {
 	stderr           io.ReadCloser
 	responses        map[string]chan *JSONRPCResponse
 	mu               sync.RWMutex
+	writeMu          sync.Mutex
 	done             chan struct{}
 	closeOnce        sync.Once
 	closeCleanupOnce sync.Once
@@ -398,7 +399,10 @@ func (c *Stdio) SendRequest(
 	}
 
 	// Send request
-	if _, err := c.stdin.Write(requestBytes); err != nil {
+	c.writeMu.Lock()
+	_, err = c.stdin.Write(requestBytes)
+	c.writeMu.Unlock()
+	if err != nil {
 		deleteResponseChan()
 		return nil, fmt.Errorf("failed to write request: %w", err)
 	}
@@ -445,7 +449,10 @@ func (c *Stdio) SendNotification(
 	}
 	notificationBytes = append(notificationBytes, '\n')
 
-	if _, err := c.stdin.Write(notificationBytes); err != nil {
+	c.writeMu.Lock()
+	_, err = c.stdin.Write(notificationBytes)
+	c.writeMu.Unlock()
+	if err != nil {
 		return fmt.Errorf("failed to write notification: %w", err)
 	}
 
@@ -508,7 +515,10 @@ func (c *Stdio) sendResponse(response JSONRPCResponse) {
 	}
 	responseBytes = append(responseBytes, '\n')
 
-	if _, err := c.stdin.Write(responseBytes); err != nil {
+	c.writeMu.Lock()
+	_, err = c.stdin.Write(responseBytes)
+	c.writeMu.Unlock()
+	if err != nil {
 		c.logger.Errorf("Error writing response: %v", err)
 	}
 }
