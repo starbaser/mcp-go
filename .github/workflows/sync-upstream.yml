@@ -1,0 +1,61 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Weekly on Monday at 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/mark3labs/mcp-go.git || true
+          git fetch upstream main
+
+      - name: Check for new commits
+        id: check
+        run: |
+          BEHIND=$(git rev-list --count HEAD..upstream/main)
+          echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
+          if [ "$BEHIND" -eq 0 ]; then
+            echo "Already up to date with upstream."
+          else
+            echo "Fork is $BEHIND commits behind upstream/main."
+          fi
+
+      - name: Merge upstream
+        if: steps.check.outputs.behind != '0'
+        run: |
+          git merge upstream/main --no-edit || {
+            echo "::error::Merge conflict detected. Manual resolution required."
+            git merge --abort
+            exit 1
+          }
+
+      - name: Push
+        if: steps.check.outputs.behind != '0'
+        run: git push origin main
+
+      - name: Create issue on conflict
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'Upstream sync failed — merge conflict',
+              body: `The weekly upstream sync from \`mark3labs/mcp-go\` failed due to a merge conflict.\n\nRun \`git fetch upstream main && git merge upstream/main\` locally to resolve.`,
+              labels: ['upstream-sync']
+            });
