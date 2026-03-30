@@ -1438,7 +1438,10 @@ type TaskParams struct {
 // It contains task metadata rather than the actual operation result.
 type CreateTaskResult struct {
 	Result
-	Task Task `json:"task"`
+	Task              Task      `json:"task"`
+	Content           []Content `json:"-"`
+	StructuredContent any       `json:"-"`
+	IsError           bool      `json:"-"`
 }
 
 // GetTaskRequest retrieves the current status of a task.

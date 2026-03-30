@@ -284,6 +284,40 @@ var (
 
 StreamableHTTP clients communicate with servers using traditional HTTP requests.
 
+### Automatic Fallback to Legacy SSE
+
+When connecting to a server that only supports the legacy SSE transport, the StreamableHTTP client will receive a 4xx error during initialization. Use the `ErrLegacySSEServer` sentinel error to detect this and fall back automatically:
+
+```go
+import "github.com/mark3labs/mcp-go/client/transport"
+
+func connectWithFallback(ctx context.Context, url string) (*client.Client, error) {
+    // Try StreamableHTTP first
+    streamableTransport, err := transport.NewStreamableHTTP(url)
+    if err != nil {
+        return nil, err
+    }
+
+    c := client.New(streamableTransport)
+    if err := c.Start(ctx); err != nil {
+        if errors.Is(err, transport.ErrLegacySSEServer) {
+            // Fall back to legacy SSE transport
+            sseTransport, err := transport.NewSSE(url)
+            if err != nil {
+                return nil, err
+            }
+            c = client.New(sseTransport)
+            if err := c.Start(ctx); err != nil {
+                return nil, err
+            }
+            return c, nil
+        }
+        return nil, err
+    }
+    return c, nil
+}
+```
+
 ### Basic StreamableHTTP Client
 
 ```go

@@ -6,6 +6,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/mark3labs/mcp-go?cache)](https://goreportcard.com/report/github.com/mark3labs/mcp-go)
 [![GoDoc](https://pkg.go.dev/badge/github.com/mark3labs/mcp-go.svg)](https://pkg.go.dev/github.com/mark3labs/mcp-go)
 
+[![AgentRank](https://agentrank-ai.com/api/badge/tool/mark3labs--mcp-go)](https://agentrank-ai.com/tool/mark3labs--mcp-go/)
 <strong>A Go implementation of the Model Context Protocol (MCP), enabling seamless integration between LLM applications and external data sources and tools.</strong>
 
 <br>
@@ -876,6 +877,14 @@ Add the `Hooks` to the server at the time of creation using the
 Add middleware to tool call handlers using the `server.WithToolHandlerMiddleware` option. Middlewares can be registered on server creation and are applied on every tool call.
 
 A recovery middleware option is available to recover from panics in a tool call and can be added to the server with the `server.WithRecovery` option.
+
+### Prompt Handler Middleware
+
+Add middleware to prompt handlers using the `server.WithPromptHandlerMiddleware` option. Middlewares can be registered on server creation and are applied on every `prompts/get` call.
+
+### Prompt Filtering
+
+Filter prompts based on context using the `server.WithPromptFilter` option. This works the same way as tool filtering but applies to `prompts/list` results.
 
 ### Regenerating Server Code
 
