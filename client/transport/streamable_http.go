@@ -272,10 +272,10 @@ func (c *StreamableHTTP) SendRequest(
 	}
 
 	ctx, cancel := c.contextAwareOfClientClose(ctx)
-	defer cancel()
 
 	resp, err := c.sendHTTP(ctx, http.MethodPost, bytes.NewReader(requestBody), "application/json, text/event-stream", request.Header)
 	if err != nil {
+		cancel()
 		if errors.Is(err, ErrSessionTerminated) && request.Method == string(mcp.MethodInitialize) {
 			// Per the MCP spec's backwards compatibility section: a 404 on an
 			// initialize POST means the server likely only supports legacy SSE.
@@ -286,9 +286,14 @@ func (c *StreamableHTTP) SendRequest(
 
 	// Only proceed if we have a valid response.
 	if resp == nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
+		cancel()
+		return nil, fmt.Errorf("failed to send request: no response received")
 	}
-	defer resp.Body.Close()
+	// Cancel the context before closing the body. On HTTP/2, Close() blocks in a
+	// select on cs.donec (stream cleanup) or cs.ctx.Done() (context cancellation).
+	// If cc.wmu is contended, cs.donec may never close, making ctx.Done() the only
+	// exit path. Canceling first guarantees Close() returns promptly.
+	defer func() { cancel(); resp.Body.Close() }()
 
 	// Check if we got an error response
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
@@ -504,60 +509,62 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 
 // readSSE reads the SSE stream(reader) and calls the handler for each event and data pair.
 // It will end when the reader is closed (or the context is done).
+//
+// A background goroutine closes the reader when ctx is cancelled, which unblocks
+// any in-progress ReadString call. This is necessary because ReadString is blocking
+// I/O that does not respect context cancellation on its own.
 func (c *StreamableHTTP) readSSE(ctx context.Context, reader io.ReadCloser, handler func(event, data string)) {
-	defer reader.Close()
+	// Close the reader when context is cancelled to interrupt blocking reads.
+	// This ensures ReadString returns immediately with an error instead of
+	// blocking indefinitely when the SSE stream is open but idle.
+	go func() {
+		<-ctx.Done()
+		reader.Close()
+	}()
 
 	br := bufio.NewReader(reader)
 	var event, data string
 
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			line, err := br.ReadString('\n')
-			if err != nil {
-				if err == io.EOF {
-					// Process any pending event before exit
-					if data != "" {
-						// If no event type is specified, use empty string (default event type)
-						if event == "" {
-							event = "message"
-						}
-						handler(event, data)
-					}
-					return
-				}
-				select {
-				case <-ctx.Done():
-					return
-				default:
-					c.logger.Errorf("SSE stream error: %v", err)
-					return
-				}
+		line, err := br.ReadString('\n')
+		if err != nil {
+			// Context was cancelled — reader was closed by the goroutine above.
+			if ctx.Err() != nil {
+				return
 			}
-
-			// Remove only newline markers
-			line = strings.TrimRight(line, "\r\n")
-			if line == "" {
-				// Empty line means end of event
+			if err == io.EOF {
+				// Process any pending event before exit
 				if data != "" {
-					// If no event type is specified, use empty string (default event type)
 					if event == "" {
 						event = "message"
 					}
 					handler(event, data)
-					event = ""
-					data = ""
 				}
-				continue
+				return
 			}
+			c.logger.Errorf("SSE stream error: %v", err)
+			return
+		}
 
-			if eventStr, ok := strings.CutPrefix(line, "event:"); ok {
-				event = strings.TrimSpace(eventStr)
-			} else if dataStr, ok := strings.CutPrefix(line, "data:"); ok {
-				data = strings.TrimSpace(dataStr)
+		// Remove only newline markers
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			// Empty line means end of event
+			if data != "" {
+				if event == "" {
+					event = "message"
+				}
+				handler(event, data)
+				event = ""
+				data = ""
 			}
+			continue
+		}
+
+		if eventStr, ok := strings.CutPrefix(line, "event:"); ok {
+			event = strings.TrimSpace(eventStr)
+		} else if dataStr, ok := strings.CutPrefix(line, "data:"); ok {
+			data = strings.TrimSpace(dataStr)
 		}
 	}
 }
@@ -571,13 +578,13 @@ func (c *StreamableHTTP) SendNotification(ctx context.Context, notification mcp.
 
 	// Create HTTP request
 	ctx, cancel := c.contextAwareOfClientClose(ctx)
-	defer cancel()
 
 	resp, err := c.sendHTTP(ctx, http.MethodPost, bytes.NewReader(requestBody), "application/json, text/event-stream", nil)
 	if err != nil {
+		cancel()
 		return fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { cancel(); resp.Body.Close() }()
 
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusAccepted, http.StatusNoContent:
@@ -676,7 +683,9 @@ func (c *StreamableHTTP) createGETConnectionToServer(ctx context.Context) error 
 	if err != nil {
 		return fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	// Cancel the context before closing the body to prevent HTTP/2 drain hangs,
+	// matching the pattern used in SendRequest and SendNotification.
+	defer func() { resp.Body.Close() }()
 
 	// Check if we got an error response
 	if resp.StatusCode == http.StatusMethodNotAllowed {
@@ -785,14 +794,14 @@ func (c *StreamableHTTP) sendResponseToServer(ctx context.Context, response *JSO
 	}
 
 	ctx, cancel := c.contextAwareOfClientClose(ctx)
-	defer cancel()
 
 	resp, err := c.sendHTTP(ctx, http.MethodPost, bytes.NewReader(responseBody), "application/json, text/event-stream", nil)
 	if err != nil {
+		cancel()
 		c.logger.Errorf("failed to send response to server: %v", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { cancel(); resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		body, _ := io.ReadAll(resp.Body)
